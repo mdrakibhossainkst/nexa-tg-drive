@@ -1,0 +1,258 @@
+# PRIVATE-SOURCE EDITION (2026-11-26): runs in the PUBLIC repo
+# mdrakibhossainkst/nexa-tg-drive, checks out the code from the PRIVATE
+# repo mdrakibhossainkst/nexa-tg-drive-source (secret SOURCE_REPO_TOKEN)
+# and publishes the release HERE as a DRAFT (publish it as Latest only
+# when the owner says so). Trigger: push a tag here, or Actions >
+# Run workflow with the tag. Everything else is unchanged.
+# Nexa TG Drive — macOS-only release workflow (v0.1.12)
+# Trigger: push a tag like mac-v0.1.12 (the version must match the version
+# in app/package.json and app/src-tauri/tauri.conf.json).
+# Builds ONLY the macOS installers (arm64 + Intel) + updater artifacts,
+# then renames them to arm64/Intel. Use this for Mac-first test rounds:
+# when the Mac build is confirmed good, build the same version for all
+# platforms with the main workflow (tag v0.1.12).
+# The release's latest.json contains only the darwin platforms; the
+# in-app updater on Mac still works, Windows/Linux simply see no update
+# until the full release replaces latest.json.
+# Required secret: TAURI_SIGNING_PRIVATE_KEY (same as the main workflow).
+# The private key must NEVER be committed to the repo.
+# NOTE: like the main workflow, this file cannot be pushed by Muse
+# (GitHub App 403 for workflow files) — upload it via GitHub web, and
+# never include it in a snapshot push (one workflow file in a push fails
+# the whole push).
+
+name: Release (macOS only)
+
+on:
+  push:
+    tags:
+      - "mac-v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build, e.g. mac-v1.0.13 (must match the app version)"
+        required: true
+      source_ref:
+        description: "Branch, tag or commit of nexa-tg-drive-source to build"
+        required: false
+        default: main
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+          - platform: macos-latest
+            args: "--target x86_64-apple-darwin"
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Check out the app source from the private repo
+        # The code lives in the PRIVATE repo mdrakibhossainkst/nexa-tg-drive-source.
+        # This workflow runs in the PUBLIC repo and publishes the release
+        # files HERE (public repo), where the website and the installed
+        # apps' updater read them. Secret SOURCE_REPO_TOKEN = owner's classic token
+        # (repo scope) so this job can read the private repo.
+        uses: actions/checkout@v4
+        with:
+          repository: mdrakibhossainkst/nexa-tg-drive-source
+          ref: ${{ inputs.source_ref || 'main' }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Check the app version matches the release tag
+        shell: bash
+        run: |
+          TAG="${{ env.RELEASE_TAG }}"
+          V="${TAG#mac-}"; V="${V#v}"
+          PKG="$(node -p "require('./app/package.json').version")"
+          CONF="$(node -p "require('./app/src-tauri/tauri.conf.json').version")"
+          echo "tag=$TAG package.json=$PKG tauri.conf.json=$CONF"
+          if [ "$PKG" != "$V" ] || [ "$CONF" != "$V" ]; then
+            echo "::error::Version mismatch: tag $TAG but the private repo's main has $PKG / $CONF"; exit 1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install x86_64 macOS target
+        if: contains(matrix.args, 'x86_64-apple-darwin')
+        run: rustup target add x86_64-apple-darwin
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Generate artwork from the uploaded logo
+        working-directory: app
+        run: |
+          python3 -m pip install --quiet pillow || python -m pip install --quiet pillow
+          python3 scripts/make-assets.py || python scripts/make-assets.py
+          npx @tauri-apps/cli@2 icon src-tauri/icon-source.png
+
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        with:
+          projectPath: app
+          owner: mdrakibhossainkst
+          repo: nexa-tg-drive
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: "Nexa TG Drive ${{ env.RELEASE_TAG }}"
+          releaseBody: "See the release notes below."
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+  rename-macos-assets:
+    # Renames only the macOS assets in the release to user-friendly arch
+    # names: Apple Silicon `aarch64` -> `arm64` and Intel `x86_64`/`x64` ->
+    # `Intel` (the .dmg and the .app.tar.gz for each). Linux assets
+    # (amd64/x86_64 .deb/.AppImage/.rpm, including the x86_64 AppImage
+    # updater bundle) and Windows assets are never touched: the filter
+    # only matches `.dmg` and lowercase `.app.tar.gz` names, which are
+    # macOS-only. latest.json is updated so the darwin-aarch64 URL points
+    # at the arm64 file and the darwin-x86_64 URL points at the Intel
+    # file. The file contents are unchanged, so the updater signatures in
+    # latest.json stay valid. The platform keys in latest.json stay
+    # `darwin-aarch64` / `darwin-x86_64` (those are the target triples
+    # the updater looks up); only the URLs change.
+    # Runs even if some desktop legs failed, as long as the macOS assets
+    # exist; exits successfully doing nothing if they do not.
+    needs: release
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Rename macOS assets to arm64/Intel and update latest.json
+        run: |
+          set -euo pipefail
+          TAG="${{ env.RELEASE_TAG }}"
+          REPO="${{ github.repository }}"
+
+          # The release is created by the release job, but the lookup can
+          # fail for a moment (API hiccup, or the release not visible
+          # yet). Retry for ~2 minutes instead of silently skipping:
+          # in mac-v0.1.14 the lookup failed once, the script exited 0,
+          # and the rename silently never happened.
+          release_json=""
+          for attempt in 1 2 3 4 5 6; do
+            if release_json=$(gh api "repos/$REPO/releases/tags/$TAG" 2>/tmp/gh-api-err.txt); then
+              break
+            fi
+            echo "Release lookup attempt $attempt failed; retrying in 20s..."
+            sleep 20
+          done
+          if [ -z "$release_json" ]; then
+            echo "ERROR: release for tag $TAG still not found after retries; failing so the missing rename is visible instead of silently skipping it."
+            cat /tmp/gh-api-err.txt || true
+            exit 1
+          fi
+
+          # Rename macOS assets only (.dmg and .app.tar.gz).
+          # Linux (.deb/.AppImage/.rpm, incl. the x86_64 AppImage updater
+          # bundle) and Windows (x64) assets never match these suffixes
+          # and are never touched.
+          echo "$release_json" | jq -r '.assets[] | "\(.id)\t\(.name)"' > /tmp/release-assets.txt
+          renamed=0
+          while IFS="$(printf '\t')" read -r asset_id asset_name; do
+            new_name="$asset_name"
+            case "$asset_name" in
+              *aarch64*.dmg|*aarch64.app.tar.gz)
+                new_name="${asset_name//aarch64/arm64}"
+                ;;
+              *x86_64*.dmg|*x86_64.app.tar.gz)
+                new_name="${asset_name//x86_64/Intel}"
+                ;;
+              # Tauri names the Intel macOS output `x64`, not `x86_64`
+              # (e.g. Nexa.TG.Drive_0.1.1_x64.dmg). Only .dmg and
+              # .app.tar.gz reach this case, so Windows x64 assets
+              # (.exe/.msi) are never touched.
+              *x64*.dmg|*x64.app.tar.gz)
+                new_name="${asset_name//x64/Intel}"
+                ;;
+              # Signature files of the renamed macOS tarballs.
+              *aarch64.app.tar.gz.sig)
+                new_name="${asset_name//aarch64/arm64}"
+                ;;
+              *x86_64.app.tar.gz.sig|*x64.app.tar.gz.sig)
+                new_name="${asset_name//x86_64/Intel}"
+                new_name="${new_name//x64/Intel}"
+                ;;
+            esac
+            if [ "$new_name" != "$asset_name" ]; then
+              # Idempotent re-runs: an earlier attempt may already have
+              # created the target name (e.g. the Intel file renamed in
+              # attempt 1, then the job re-ran and uploaded a fresh x64
+              # file). GitHub forbids two assets with the same name, so
+              # delete the stale target first; the fresh file then takes
+              # its place. Without this, any rename re-run fails with
+              # HTTP 422 already_exists.
+              target_id=$(echo "$release_json" | jq -r --arg n "$new_name" '.assets[] | select(.name == $n) | .id' | head -n 1)
+              if [ -n "$target_id" ]; then
+                echo "Removing stale $new_name (asset $target_id) so the fresh file can take its place"
+                gh api "repos/$REPO/releases/assets/$target_id" -X DELETE
+              fi
+              echo "Renaming asset $asset_name -> $new_name"
+              gh api "repos/$REPO/releases/assets/$asset_id" -X PATCH -f "name=$new_name" --jq '.name'
+              renamed=$((renamed + 1))
+            fi
+          done < /tmp/release-assets.txt
+          if [ "$renamed" -eq 0 ]; then
+            echo "No macOS assets found to rename; nothing to do."
+            exit 0
+          fi
+
+          # Update latest.json: only the darwin-* URLs change
+          # (aarch64 -> arm64, x86_64 -> Intel in the filenames); the
+          # platform keys and the signatures stay exactly as they are.
+          tmpdir=$(mktemp -d)
+          if ! gh release download "$TAG" -p "latest.json" -D "$tmpdir" --repo "$REPO"; then
+            echo "latest.json not found in release $TAG; skipping."
+            exit 0
+          fi
+          python3 - "$tmpdir/latest.json" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          with open(path) as f:
+              data = json.load(f)
+          changed = []
+          for platform, info in data.get("platforms", {}).items():
+              if not (isinstance(info, dict) and "url" in info):
+                  continue
+              new_url = info["url"]
+              if platform in ("darwin-aarch64", "darwin-aarch64-app"):
+                  new_url = new_url.replace("aarch64", "arm64")
+              elif platform in ("darwin-x86_64", "darwin-x86_64-app"):
+                  # The Intel file is named `x64` by Tauri (not x86_64).
+                  new_url = new_url.replace("x86_64", "Intel").replace("x64", "Intel")
+              if new_url != info["url"]:
+                  info["url"] = new_url
+                  changed.append(platform)
+          print("latest.json URLs updated for: " + ", ".join(changed) if changed else "latest.json URLs already point at renamed files")
+          with open(path, "w") as f:
+              json.dump(data, f, indent=2)
+              f.write("\n")
+          PY
+          gh release delete-asset "$TAG" latest.json -y --repo "$REPO"
+          gh release upload "$TAG" "$tmpdir/latest.json" --repo "$REPO" --clobber

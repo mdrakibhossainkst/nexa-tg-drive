@@ -1,0 +1,748 @@
+# PRIVATE-SOURCE EDITION (2026-11-26): runs in the PUBLIC repo
+# mdrakibhossainkst/nexa-tg-drive, checks out the code from the PRIVATE
+# repo mdrakibhossainkst/nexa-tg-drive-source (secret SOURCE_REPO_TOKEN)
+# and publishes the release HERE as a DRAFT (publish it as Latest only
+# when the owner says so). Trigger: push a tag here, or Actions >
+# Run workflow with the tag. Everything else is unchanged.
+# Nexa TG Drive — release workflow (v0.1.14)
+# Trigger: push a version tag, e.g. v0.1.12 (must match the version in
+# app/package.json and app/src-tauri/tauri.conf.json).
+# Builds signed desktop installers + updater artifacts for Windows, macOS
+# and Linux, an Android APK, and publishes them as a GitHub Release with
+# latest.json. The `rename-macos-assets` job then renames the macOS assets
+# to user-friendly arch names (aarch64 -> arm64, x86_64/x64 -> Intel) and
+# updates latest.json; Linux and Windows assets are never touched.
+#
+# Required repository secrets (Settings > Secrets and variables > Actions):
+#   TAURI_SIGNING_PRIVATE_KEY — the updater private key. The matching
+#   public key is already in app/src-tauri/tauri.conf.json.
+#   (The key has no password, so no TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#   secret is needed.)
+#   ANDROID_KEYSTORE_BASE64 — base64 of the Android release keystore
+#     (.keystore/.jks). Create it with:
+#     keytool -genkey -v -keystore nexa-release.keystore -alias nexa -keyalg RSA -keysize 2048 -validity 10000
+#     then: base64 -w0 nexa-release.keystore (Linux) or base64 -i nexa-release.keystore (macOS)
+#   ANDROID_KEYSTORE_PASSWORD — the keystore password from keytool
+#   ANDROID_KEY_ALIAS — the key alias (e.g. nexa)
+#   ANDROID_KEY_PASSWORD — the key password from keytool
+#   If the four ANDROID_* secrets are missing, the Android job builds an
+#   unsigned debug APK instead (named *-android-debug.apk) so the release
+#   still ships an APK for testing. When they are set, the release APK is
+#   signed after the build with apksigner (the generated Android project
+#   has no signing config wired in, so no keystore.properties is used).
+#   gen/android is gitignored: the Android job generates the project in
+#   CI with `tauri android init` before building.
+# The private key and the keystore must NEVER be committed to the repo.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build, e.g. v1.0.13 (must match the app version)"
+        required: true
+      source_ref:
+        description: "Branch, tag or commit of nexa-tg-drive-source to build"
+        required: false
+        default: main
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+          - platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+          - platform: macos-latest
+            args: "--target x86_64-apple-darwin"
+          - platform: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Check out the app source from the private repo
+        # The code lives in the PRIVATE repo mdrakibhossainkst/nexa-tg-drive-source.
+        # This workflow runs in the PUBLIC repo and publishes the release
+        # files HERE (public repo), where the website and the installed
+        # apps' updater read them. Secret SOURCE_REPO_TOKEN = owner's classic token
+        # (repo scope) so this job can read the private repo.
+        uses: actions/checkout@v4
+        with:
+          repository: mdrakibhossainkst/nexa-tg-drive-source
+          ref: ${{ inputs.source_ref || 'main' }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Check the app version matches the release tag
+        shell: bash
+        run: |
+          TAG="${{ env.RELEASE_TAG }}"
+          V="${TAG#mac-}"; V="${V#v}"
+          PKG="$(node -p "require('./app/package.json').version")"
+          CONF="$(node -p "require('./app/src-tauri/tauri.conf.json').version")"
+          echo "tag=$TAG package.json=$PKG tauri.conf.json=$CONF"
+          if [ "$PKG" != "$V" ] || [ "$CONF" != "$V" ]; then
+            echo "::error::Version mismatch: tag $TAG but the private repo's main has $PKG / $CONF"; exit 1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install x86_64 macOS target
+        if: contains(matrix.args, 'x86_64-apple-darwin')
+        run: rustup target add x86_64-apple-darwin
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libssl-dev libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libfuse2
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Generate artwork from the uploaded logo
+        # Transparent icon source (logo at 78% on a transparent canvas —
+        # Android crops full-bleed artwork, macOS icons looked oversized,
+        # and a baked background showed as a box on the Android splash)
+        # + the macOS installer background. Pillow is installed first;
+        # `python3` exists on macOS/Ubuntu runners, `python` on Windows —
+        # try both.
+        working-directory: app
+        run: |
+          python3 -m pip install --quiet pillow || python -m pip install --quiet pillow
+          python3 scripts/make-assets.py || python scripts/make-assets.py
+          npx @tauri-apps/cli@2 icon src-tauri/icon-source.png
+
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        with:
+          projectPath: app
+          owner: mdrakibhossainkst
+          repo: nexa-tg-drive
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: "Nexa TG Drive ${{ env.RELEASE_TAG }}"
+          releaseBody: "See the release notes below."
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+  android:
+    # Builds the Android APK. This job is independent of the desktop
+    # `release` job: it neither blocks it nor is blocked by it, and the
+    # desktop jobs do not wait for it.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the app source from the private repo
+        # The code lives in the PRIVATE repo mdrakibhossainkst/nexa-tg-drive-source.
+        # This workflow runs in the PUBLIC repo and publishes the release
+        # files HERE (public repo), where the website and the installed
+        # apps' updater read them. Secret SOURCE_REPO_TOKEN = owner's classic token
+        # (repo scope) so this job can read the private repo.
+        uses: actions/checkout@v4
+        with:
+          repository: mdrakibhossainkst/nexa-tg-drive-source
+          ref: ${{ inputs.source_ref || 'main' }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Check the app version matches the release tag
+        shell: bash
+        run: |
+          TAG="${{ env.RELEASE_TAG }}"
+          V="${TAG#mac-}"; V="${V#v}"
+          PKG="$(node -p "require('./app/package.json').version")"
+          CONF="$(node -p "require('./app/src-tauri/tauri.conf.json').version")"
+          echo "tag=$TAG package.json=$PKG tauri.conf.json=$CONF"
+          if [ "$PKG" != "$V" ] || [ "$CONF" != "$V" ]; then
+            echo "::error::Version mismatch: tag $TAG but the private repo's main has $PKG / $CONF"; exit 1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        # The ubuntu runner already ships cmdline-tools (sdkmanager on
+        # PATH, ANDROID_HOME set). android-actions/setup-android@v3
+        # fails here: it runs `sdkmanager "tools"`, but the legacy
+        # "tools" package no longer exists in the current repositories
+        # (sdkmanager exits 1: "Failed to find package 'tools'").
+        # Install only packages that still exist.
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;27.2.12479018"
+
+      - name: Install Rust Android targets
+        run: |
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+
+      - name: Initialize Android project
+        # gen/android is gitignored, so the project is generated fresh here
+        # from the local Tauri CLI templates before building.
+        # NDK_HOME must be set in the shell: ${{ env.ANDROID_HOME }} is
+        # empty in workflow expressions (the `env` context only holds
+        # variables defined in this file, not the runner's environment),
+        # so a step-level `env:` NDK_HOME of "$ANDROID_HOME/ndk/..."
+        # became "/ndk/..." and Tauri rejected it as invalid NDK.
+        working-directory: app
+        run: |
+          export NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+          test -d "$NDK_HOME" || { echo "NDK not found at $NDK_HOME"; ls "$ANDROID_HOME/ndk" || true; exit 1; }
+          npx @tauri-apps/cli@2 android init --ci --skip-targets-install
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Generate artwork from the uploaded logo
+        working-directory: app
+        run: |
+          python3 -m pip install --quiet pillow || python -m pip install --quiet pillow
+          python3 scripts/make-assets.py || python scripts/make-assets.py
+          npx @tauri-apps/cli@2 icon src-tauri/icon-source.png
+
+      - name: Make Android icon background transparent
+        # Tauri's Android template sets the adaptive-icon background to solid
+        # white (#FFFFFF), which shows as a white box behind the logo on the
+        # launcher icon and the splash screen. The logo must appear exactly
+        # as supplied (transparent), so patch it to fully transparent.
+        # This step MUST run after "Generate artwork": the file it edits
+        # (values/ic_launcher_background.xml) is created by `tauri icon`,
+        # not by `android init` — running it earlier fails with "No such
+        # file or directory" (that is what killed the v0.1.8 Android job).
+        # gen/android is regenerated on every run, so this patch must live
+        # here, not in a local file.
+        run: |
+          sed -i 's/#FFFFFF/#00000000/' app/src-tauri/gen/android/app/src/main/res/values/ic_launcher_background.xml
+          grep -q '#00000000' app/src-tauri/gen/android/app/src/main/res/values/ic_launcher_background.xml
+
+      - name: Apply Nexa Android overrides
+        # gen/android is regenerated on every run (gitignored), so every
+        # Android-native change lives in app/src-tauri/android-overrides/
+        # and is applied here: network security config (release WebView may
+        # load the app's own http://127.0.0.1 stream server), share-sheet
+        # intake, biometric lock / privacy screen plugin, the foreground
+        # transfer service + permissions, the androidx.biometric dependency,
+        # the #101114 window/splash background, and the icon cleanup.
+        # MUST run after "Initialize Android project" AND after "Generate
+        # artwork" (it checks files that `tauri icon` writes). The second
+        # call fails the job if anything was left unapplied.
+        working-directory: app
+        run: |
+          node scripts/apply-android-overrides.mjs
+          node scripts/apply-android-overrides.mjs --check
+
+      - name: Check for Android signing secrets
+        id: signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Android signing secrets are not all set; building an unsigned debug APK instead."
+          fi
+
+      - name: Decode Android keystore
+        # The generated Android project has no signing config wired in, so
+        # the release APK is signed after the build with apksigner (see
+        # the "Sign release APK" step). Only the decoded keystore file is
+        # needed here; it never enters the repo.
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: base64 -d <<< "$ANDROID_KEYSTORE_BASE64" > "$RUNNER_TEMP/nexa-release.keystore"
+
+      - name: Build Android APK
+        working-directory: app
+        run: |
+          export NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+          if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
+            npx @tauri-apps/cli@2 android build --apk
+          else
+            npx @tauri-apps/cli@2 android build --apk --debug
+          fi
+
+      - name: Sign release APK with apksigner
+        id: sign
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          TAG="${{ env.RELEASE_TAG }}"
+          UNSIGNED_APK="app/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk"
+          if [ ! -f "$UNSIGNED_APK" ]; then
+            echo "Unsigned release APK not found at $UNSIGNED_APK"
+            find app/src-tauri/gen/android/app/build/outputs -name '*.apk' || true
+            exit 1
+          fi
+          SIGNED_APK="$RUNNER_TEMP/Nexa.TG.Drive_${TAG#v}_android.apk"
+          BT="$ANDROID_HOME/build-tools/34.0.0"
+          "$BT/zipalign" -f -p 4 "$UNSIGNED_APK" "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" sign --ks "$RUNNER_TEMP/nexa-release.keystore" \
+            --ks-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --key-pass "pass:$ANDROID_KEY_PASSWORD" \
+            --out "$SIGNED_APK" "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" verify "$SIGNED_APK"
+          echo "apk_path=$SIGNED_APK" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ env.RELEASE_TAG }}"
+          REPO="${{ github.repository }}"
+          APK="${{ steps.sign.outputs.apk_path }}"
+          if [ -z "$APK" ]; then
+            for candidate in \
+              app/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk \
+              app/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk; do
+              if [ -f "$candidate" ]; then APK="$candidate"; break; fi
+            done
+          fi
+          if [ -z "$APK" ]; then
+            echo "No universal APK found; listing all APKs:"
+            find app/src-tauri/gen/android/app/build/outputs -name '*.apk' || true
+            exit 1
+          fi
+          if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
+            NAME="Nexa.TG.Drive_${TAG#v}_android.apk"
+          else
+            NAME="Nexa.TG.Drive_${TAG#v}_android-debug.apk"
+          fi
+          # When the APK was signed, the sign step already wrote it to
+          # $RUNNER_TEMP/$NAME, so copying it onto itself would fail
+          # under `set -e` (that is what broke v0.1.7). Only copy when
+          # the paths differ; otherwise upload the file already there.
+          if [ "$APK" != "$RUNNER_TEMP/$NAME" ]; then
+            cp "$APK" "$RUNNER_TEMP/$NAME"
+          fi
+          # The desktop job creates the release; wait for it (up to ~10 min)
+          # so this job works even if it starts first.
+          for i in $(seq 1 20); do
+            if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then break; fi
+            echo "Waiting for release $TAG to exist ($i/20)..."
+            sleep 30
+          done
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --title "Nexa TG Drive $TAG" --repo "$REPO"
+          fi
+          gh release upload "$TAG" "$RUNNER_TEMP/$NAME" --repo "$REPO" --clobber
+
+  ios:
+    # iPhone / iPad build (v1.0.7): an UNSIGNED IPA, uploaded to the release
+    # as Nexa.TG.Drive_<version>_iOS.ipa. There is no Apple Developer
+    # account: every user signs it with their OWN free Apple ID through
+    # SideStore, which also re-signs it every 7 days. Minimum iOS 15.0
+    # (bundle.iOS.minimumSystemVersion in tauri.conf.json).
+    # Independent like the android job: it neither blocks nor waits for the
+    # desktop jobs, except that the upload step waits for the release.
+    # gen/apple is not committed, so the Xcode project is generated here
+    # with `tauri ios init`, and every iOS-native setting lives in
+    # committed files (src-tauri/Info.ios.plist + scripts/apply-ios-overrides.py).
+    #
+    # Step order matters (each step needs the previous one):
+    #  1. npm ci BEFORE `ios init`: init must run through the LOCAL CLI via
+    #     `npm run tauri` — the CLI bakes the way it was started into the
+    #     Xcode "Build Rust Code" script (`npm run -- tauri ios xcode-script`),
+    #     and that script only works when node_modules/.bin/tauri exists.
+    #  2. `ios init` BEFORE "Generate artwork": `tauri icon` only knows where
+    #     the iPhone icons go once gen/apple exists; the icons are also copied
+    #     into the AppIcon set explicitly so this never depends on that.
+    #  3. Overrides AFTER init (they edit the generated Info.plist) and again
+    #     on the built .app (xcodegen/Tauri may rewrite the generated plist).
+    #  4. Build through `tauri ios build` (NOT raw xcodebuild): the Xcode
+    #     "Build Rust Code" phase reads its options from a server that only a
+    #     live `tauri ios build` process provides. Signing is switched off
+    #     for every target with XCODE_XCCONFIG_FILE; the CLI's final export
+    #     step needs a team and is EXPECTED to fail — the archived .app is
+    #     packaged into Payload/ → .ipa by hand instead.
+    runs-on: macos-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the app source from the private repo
+        # The code lives in the PRIVATE repo mdrakibhossainkst/nexa-tg-drive-source.
+        # This workflow runs in the PUBLIC repo and publishes the release
+        # files HERE (public repo), where the website and the installed
+        # apps' updater read them. Secret SOURCE_REPO_TOKEN = owner's classic token
+        # (repo scope) so this job can read the private repo.
+        uses: actions/checkout@v4
+        with:
+          repository: mdrakibhossainkst/nexa-tg-drive-source
+          ref: ${{ inputs.source_ref || 'main' }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Check the app version matches the release tag
+        shell: bash
+        run: |
+          TAG="${{ env.RELEASE_TAG }}"
+          V="${TAG#mac-}"; V="${V#v}"
+          PKG="$(node -p "require('./app/package.json').version")"
+          CONF="$(node -p "require('./app/src-tauri/tauri.conf.json').version")"
+          echo "tag=$TAG package.json=$PKG tauri.conf.json=$CONF"
+          if [ "$PKG" != "$V" ] || [ "$CONF" != "$V" ]; then
+            echo "::error::Version mismatch: tag $TAG but the private repo's main has $PKG / $CONF"; exit 1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Install XcodeGen
+        # `tauri ios init` generates the Xcode project with XcodeGen.
+        run: command -v xcodegen || brew install xcodegen
+
+      - name: Initialize iOS project
+        # MUST be `npm run tauri` (local CLI), not `npx @tauri-apps/cli@2`:
+        # see step-order note 1 above.
+        working-directory: app
+        run: |
+          npm run tauri -- ios init --ci
+          test -d src-tauri/gen/apple || { echo "gen/apple was not generated"; exit 1; }
+          ls src-tauri/gen/apple
+
+      - name: Generate artwork from the uploaded logo
+        # Same artwork as the other jobs. iPhone icons cannot be transparent
+        # (iOS shows transparent pixels as black), so they get the Aurora
+        # navy #060B1F behind the logo (--ios-color). MUST run after
+        # "Initialize iOS project" (the AppIcon set is created by init).
+        working-directory: app
+        run: |
+          python3 -m pip install --quiet pillow || python -m pip install --quiet pillow
+          python3 scripts/make-assets.py || python scripts/make-assets.py
+          npx @tauri-apps/cli@2 icon src-tauri/icon-source.png --ios-color "#060B1F"
+          APPICON="$(find src-tauri/gen/apple -type d -name 'AppIcon.appiconset' | head -n 1)"
+          test -n "$APPICON" || { echo "AppIcon.appiconset not found under gen/apple"; exit 1; }
+          if ls src-tauri/icons/ios/*.png >/dev/null 2>&1; then cp src-tauri/icons/ios/*.png "$APPICON"/; fi
+          ls "$APPICON"
+
+      - name: Apply Nexa iOS overrides
+        # Merges src-tauri/Info.ios.plist (Files-app sharing for downloads,
+        # the `sidestore` URL scheme for the update popup, local-network
+        # ATS for the 127.0.0.1 stream server, usage descriptions) into the
+        # generated Info.plist. The --check call fails the job if anything
+        # was left unapplied.
+        working-directory: app
+        run: |
+          python3 scripts/apply-ios-overrides.py
+          python3 scripts/apply-ios-overrides.py --check
+
+      - name: Build unsigned iOS app
+        # See step-order note 4. The xcconfig file overrides the signing
+        # settings of every target (app + Swift plugin packages) without
+        # touching the generated project. `--no-sign` is tried first; if
+        # this CLI version does not know it for `ios build`, the same build
+        # runs without it. A non-zero exit is not the failure signal (the
+        # export step always fails without a team): a missing .app or
+        # "** ARCHIVE FAILED **" / "** BUILD FAILED **" is.
+        working-directory: app
+        run: |
+          # Actions runs bash with -e by default: switch it off here so the
+          # expected failure of the export step does not end the step before
+          # the checks below decide.
+          set +e
+          set -uo pipefail
+          # OTHER_LDFLAGS: a Rust staticlib (libapp.a) does not carry its
+          # framework links into Xcode, so every Apple framework the Rust
+          # crates link on iOS is listed here (v1.0.7 failed on the missing
+          # SystemConfiguration used by hickory-resolver). Listing a framework
+          # the generated project already links is harmless.
+          XC="$RUNNER_TEMP/nexa-unsigned.xcconfig"
+          printf '%s\n' \
+            'CODE_SIGNING_ALLOWED = NO' \
+            'CODE_SIGNING_REQUIRED = NO' \
+            'CODE_SIGN_IDENTITY =' \
+            'CODE_SIGN_ENTITLEMENTS =' \
+            'EXPANDED_CODE_SIGN_IDENTITY =' \
+            'DEVELOPMENT_TEAM =' \
+            'PROVISIONING_PROFILE_SPECIFIER =' \
+            'OTHER_LDFLAGS = $(inherited) -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Foundation -framework UIKit -framework WebKit -framework Network -framework CoreGraphics -framework QuartzCore -framework CoreText -framework CoreImage -framework CoreLocation -framework CoreData -framework CloudKit -framework UserNotifications' > "$XC"
+          export XCODE_XCCONFIG_FILE="$XC"
+          LOG="$RUNNER_TEMP/ios-build.log"
+          npm run tauri -- ios build --ci --no-sign 2>&1 | tee "$LOG"
+          if grep -qiE "unexpected argument '--no-sign'|unrecognized.*--no-sign|Found argument '--no-sign'" "$LOG"; then
+            echo "::notice::this Tauri CLI has no --no-sign for ios build; building with signing switched off by the xcconfig only"
+            npm run tauri -- ios build --ci 2>&1 | tee "$LOG"
+          fi
+          if grep -qE '\*\* (ARCHIVE|BUILD) FAILED \*\*' "$LOG"; then
+            echo "::error::Xcode build failed (see the log above)"
+            grep -nE 'error:|\*\* (ARCHIVE|BUILD) FAILED' "$LOG" | tail -40
+            exit 1
+          fi
+          if grep -q 'exportArchive' "$LOG"; then
+            echo "note: the export step failed as expected (no Apple team); the archived .app is packaged next"
+          fi
+          exit 0
+
+      - name: Package unsigned IPA
+        id: ipa
+        working-directory: app
+        run: |
+          set -euo pipefail
+          TAG="${{ env.RELEASE_TAG }}"
+          NAME="Nexa.TG.Drive_${TAG#v}_iOS.ipa"
+          STAGE="$RUNNER_TEMP/ipa-stage"
+          rm -rf "$STAGE"; mkdir -p "$STAGE/Payload"
+          # 1) An IPA the CLI produced itself (when --no-sign worked)…
+          IPA_SRC="$(find src-tauri/gen/apple/build -name '*.ipa' 2>/dev/null | head -n 1 || true)"
+          APP=""
+          if [ -n "$IPA_SRC" ]; then
+            echo "CLI produced $IPA_SRC"
+            (cd "$STAGE" && unzip -q "$GITHUB_WORKSPACE/app/$IPA_SRC")
+            APP="$(find "$STAGE/Payload" -maxdepth 1 -name '*.app' -type d | head -n 1)"
+          fi
+          # 2) …otherwise the .app from the archive (or the build products).
+          if [ -z "$APP" ]; then
+            SRC="$(find src-tauri/gen/apple/build -maxdepth 6 -path '*.xcarchive/Products/Applications/*.app' -type d 2>/dev/null | head -n 1 || true)"
+            if [ -z "$SRC" ]; then
+              SRC="$(find src-tauri/gen/apple/build "$HOME/Library/Developer/Xcode/DerivedData" -maxdepth 8 -path '*-iphoneos/*.app' -type d 2>/dev/null | grep -v '\.app/' | head -n 1 || true)"
+            fi
+            if [ -z "$SRC" ]; then
+              echo "::error::no built .app found"
+              find src-tauri/gen/apple/build -maxdepth 5 2>/dev/null | head -80 || true
+              exit 1
+            fi
+            echo "Using $SRC"
+            cp -R "$SRC" "$STAGE/Payload/"
+            APP="$STAGE/Payload/$(basename "$SRC")"
+          fi
+          # The Rust static library is linked into the executable; when the
+          # project lists Externals as a resource it also lands in the
+          # bundle as dead weight (hundreds of MB) — drop it.
+          find "$APP" -maxdepth 1 -name '*.a' -print -delete
+          # Make sure the Info.plist keys are in the bundle itself.
+          python3 scripts/apply-ios-overrides.py --app "$APP"
+          python3 scripts/apply-ios-overrides.py --app "$APP" --check
+          EXE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")"
+          test -f "$APP/$EXE" || { echo "::error::executable $EXE missing from the bundle"; exit 1; }
+          lipo -archs "$APP/$EXE"
+          for k in CFBundleIdentifier CFBundleShortVersionString CFBundleVersion MinimumOSVersion; do
+            echo "$k = $(/usr/libexec/PlistBuddy -c "Print :$k" "$APP/Info.plist" 2>/dev/null || echo '?')"
+          done
+          (cd "$STAGE" && zip -qry "$RUNNER_TEMP/$NAME" Payload)
+          unzip -l "$RUNNER_TEMP/$NAME" > "$RUNNER_TEMP/ipa-list.txt"
+          grep -q "Payload/.*\.app/Info.plist" "$RUNNER_TEMP/ipa-list.txt" || { echo "::error::IPA has no app bundle"; exit 1; }
+          ls -lh "$RUNNER_TEMP/$NAME"
+          echo "ipa_path=$RUNNER_TEMP/$NAME" >> "$GITHUB_OUTPUT"
+          echo "ipa_name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload IPA to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ env.RELEASE_TAG }}"
+          REPO="${{ github.repository }}"
+          IPA="${{ steps.ipa.outputs.ipa_path }}"
+          # The desktop job creates the release; wait for it (up to ~10 min)
+          # so this job works even if it starts first (same as android).
+          for i in $(seq 1 20); do
+            if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then break; fi
+            echo "Waiting for release $TAG to exist ($i/20)..."
+            sleep 30
+          done
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --title "Nexa TG Drive $TAG" --repo "$REPO"
+          fi
+          gh release upload "$TAG" "$IPA" --repo "$REPO" --clobber
+
+  rename-macos-assets:
+    # Renames only the macOS assets in the release to user-friendly arch
+    # names: Apple Silicon `aarch64` -> `arm64` and Intel `x86_64`/`x64` ->
+    # `Intel` (the .dmg and the .app.tar.gz for each). Linux assets
+    # (amd64/x86_64 .deb/.AppImage/.rpm, including the x86_64 AppImage
+    # updater bundle) and Windows assets are never touched: the filter
+    # only matches `.dmg` and lowercase `.app.tar.gz` names, which are
+    # macOS-only. latest.json is updated so the darwin-aarch64 URL points
+    # at the arm64 file and the darwin-x86_64 URL points at the Intel
+    # file. The file contents are unchanged, so the updater signatures in
+    # latest.json stay valid. The platform keys in latest.json stay
+    # `darwin-aarch64` / `darwin-x86_64` (those are the target triples
+    # the updater looks up); only the URLs change.
+    # Runs even if some desktop legs failed, as long as the macOS assets
+    # exist; exits successfully doing nothing if they do not.
+    needs: release
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Rename macOS assets to arm64/Intel and update latest.json
+        run: |
+          set -euo pipefail
+          TAG="${{ env.RELEASE_TAG }}"
+          REPO="${{ github.repository }}"
+
+          # The release is created by the release job, but the lookup can
+          # fail for a moment (API hiccup, or the release not visible
+          # yet). Retry for ~2 minutes instead of silently skipping:
+          # in mac-v0.1.14 the lookup failed once, the script exited 0,
+          # and the rename silently never happened.
+          release_json=""
+          for attempt in 1 2 3 4 5 6; do
+            if release_json=$(gh api "repos/$REPO/releases/tags/$TAG" 2>/tmp/gh-api-err.txt); then
+              break
+            fi
+            echo "Release lookup attempt $attempt failed; retrying in 20s..."
+            sleep 20
+          done
+          if [ -z "$release_json" ]; then
+            echo "ERROR: release for tag $TAG still not found after retries; failing so the missing rename is visible instead of silently skipping it."
+            cat /tmp/gh-api-err.txt || true
+            exit 1
+          fi
+
+          # Rename macOS assets only (.dmg and .app.tar.gz).
+          # Linux (.deb/.AppImage/.rpm, incl. the x86_64 AppImage updater
+          # bundle) and Windows (x64) assets never match these suffixes
+          # and are never touched.
+          echo "$release_json" | jq -r '.assets[] | "\(.id)\t\(.name)"' > /tmp/release-assets.txt
+          renamed=0
+          while IFS="$(printf '\t')" read -r asset_id asset_name; do
+            new_name="$asset_name"
+            case "$asset_name" in
+              *aarch64*.dmg|*aarch64.app.tar.gz)
+                new_name="${asset_name//aarch64/arm64}"
+                ;;
+              *x86_64*.dmg|*x86_64.app.tar.gz)
+                new_name="${asset_name//x86_64/Intel}"
+                ;;
+              # Tauri names the Intel macOS output `x64`, not `x86_64`
+              # (e.g. Nexa.TG.Drive_0.1.1_x64.dmg). Only .dmg and
+              # .app.tar.gz reach this case, so Windows x64 assets
+              # (.exe/.msi) are never touched.
+              *x64*.dmg|*x64.app.tar.gz)
+                new_name="${asset_name//x64/Intel}"
+                ;;
+              # Signature files of the renamed macOS tarballs.
+              *aarch64.app.tar.gz.sig)
+                new_name="${asset_name//aarch64/arm64}"
+                ;;
+              *x86_64.app.tar.gz.sig|*x64.app.tar.gz.sig)
+                new_name="${asset_name//x86_64/Intel}"
+                new_name="${new_name//x64/Intel}"
+                ;;
+            esac
+            if [ "$new_name" != "$asset_name" ]; then
+              # Idempotent re-runs: an earlier attempt may already have
+              # created the target name (e.g. the Intel file renamed in
+              # attempt 1, then the job re-ran and uploaded a fresh x64
+              # file). GitHub forbids two assets with the same name, so
+              # delete the stale target first; the fresh file then takes
+              # its place. Without this, any rename re-run fails with
+              # HTTP 422 already_exists.
+              target_id=$(echo "$release_json" | jq -r --arg n "$new_name" '.assets[] | select(.name == $n) | .id' | head -n 1)
+              if [ -n "$target_id" ]; then
+                echo "Removing stale $new_name (asset $target_id) so the fresh file can take its place"
+                gh api "repos/$REPO/releases/assets/$target_id" -X DELETE
+              fi
+              echo "Renaming asset $asset_name -> $new_name"
+              gh api "repos/$REPO/releases/assets/$asset_id" -X PATCH -f "name=$new_name" --jq '.name'
+              renamed=$((renamed + 1))
+            fi
+          done < /tmp/release-assets.txt
+          if [ "$renamed" -eq 0 ]; then
+            echo "No macOS assets found to rename; nothing to do."
+            exit 0
+          fi
+
+          # Update latest.json: only the darwin-* URLs change
+          # (aarch64 -> arm64, x86_64 -> Intel in the filenames); the
+          # platform keys and the signatures stay exactly as they are.
+          tmpdir=$(mktemp -d)
+          if ! gh release download "$TAG" -p "latest.json" -D "$tmpdir" --repo "$REPO"; then
+            echo "latest.json not found in release $TAG; skipping."
+            exit 0
+          fi
+          python3 - "$tmpdir/latest.json" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          with open(path) as f:
+              data = json.load(f)
+          changed = []
+          for platform, info in data.get("platforms", {}).items():
+              if not (isinstance(info, dict) and "url" in info):
+                  continue
+              new_url = info["url"]
+              if platform in ("darwin-aarch64", "darwin-aarch64-app"):
+                  new_url = new_url.replace("aarch64", "arm64")
+              elif platform in ("darwin-x86_64", "darwin-x86_64-app"):
+                  # The Intel file is named `x64` by Tauri (not x86_64).
+                  new_url = new_url.replace("x86_64", "Intel").replace("x64", "Intel")
+              if new_url != info["url"]:
+                  info["url"] = new_url
+                  changed.append(platform)
+          print("latest.json URLs updated for: " + ", ".join(changed) if changed else "latest.json URLs already point at renamed files")
+          with open(path, "w") as f:
+              json.dump(data, f, indent=2)
+              f.write("\n")
+          PY
+          gh release delete-asset "$TAG" latest.json -y --repo "$REPO"
+          gh release upload "$TAG" "$tmpdir/latest.json" --repo "$REPO" --clobber
