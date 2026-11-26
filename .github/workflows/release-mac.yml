@@ -157,7 +157,10 @@ jobs:
           # and the rename silently never happened.
           release_json=""
           for attempt in 1 2 3 4 5 6; do
-            if release_json=$(gh api "repos/$REPO/releases/tags/$TAG" 2>/tmp/gh-api-err.txt); then
+            # The releases/tags/<tag> endpoint does NOT return DRAFT releases
+            # (owner rule: new builds stay Draft), so list releases (drafts
+            # included for this token) and pick the one with our tag.
+            if release_json=$(gh api "repos/$REPO/releases?per_page=30" --jq "[.[] | select(.tag_name == \"$TAG\")][0] // empty" 2>/tmp/gh-api-err.txt) && [ -n "$release_json" ]; then
               break
             fi
             echo "Release lookup attempt $attempt failed; retrying in 20s..."
