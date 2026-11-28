@@ -567,9 +567,11 @@ Found a security issue? Please report it privately — see [SECURITY.md](SECURIT
 
 <br>
 
-<p align="center">
-  <img src="assets/readme/nexa-icon.svg" width="64" alt="Nexa TG Drive icon"><br>
-  <b>Nexa TG Drive</b><br>
-  <sub>Developed by Md. Rakib Hossain</sub><br>
-  <sub>© 2026 Md. Rakib Hossain · All rights reserved · <a href="LICENSE">License</a> · <a href="https://nexatgdrive.pages.dev/">Website</a></sub>
-</p>
+<table align="center">
+  <tr>
+    <td align="center" width="220"><img src="assets/readme/nexa-icon.svg" width="80" alt="Nexa TG Drive logo"><br><b>Nexa TG Drive</b></td>
+    <td align="center" width="220"><img src="assets/readme/developer.png" width="80" alt="Md. Rakib Hossain"><br><sub>Developed by</sub><br><b>Md. Rakib Hossain</b></td>
+  </tr>
+</table>
+
+<p align="center"><sub>© 2026 Md. Rakib Hossain. All rights reserved. · <a href="LICENSE">License</a> · <a href="https://nexatgdrive.pages.dev/">Website</a></sub></p>
