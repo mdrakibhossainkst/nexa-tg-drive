@@ -113,6 +113,32 @@ Everything below is built into the app — free, for every user.
   </tr>
   <tr>
     <td width="50%" valign="top">
+      <img src="assets/readme/icons/drive.svg" width="36" alt=""><br>
+      <b>Nexa Drive</b><br>
+      <sub>Computers: your Telegram files as a real drive.</sub>
+      <ul>
+        <li>Shows up in This PC, Finder or your file manager</li>
+        <li>Open and save files from any app, directly</li>
+        <li>Windows: the free WinFsp driver is installed with Nexa</li>
+        <li>Mac: ready to use · Linux: needs FUSE once</li>
+        <li>Turn it on or off in <i>Settings › Nexa Drive</i></li>
+      </ul>
+    </td>
+    <td width="50%" valign="top">
+      <img src="assets/readme/icons/network.svg" width="36" alt=""><br>
+      <b>Runs in the background</b><br>
+      <sub>Computers: always there, never in the way.</sub>
+      <ul>
+        <li>Starts with your computer</li>
+        <li>A small icon in the tray / menu bar</li>
+        <li>Closing the window keeps Nexa running</li>
+        <li>Tray / menu-bar icon › Quit stops it</li>
+        <li>Windows: right-click any file › <b>Send to Nexa</b></li>
+      </ul>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
       <img src="assets/readme/icons/stream.svg" width="36" alt=""><br>
       <b>Preview and streaming</b><br>
       <sub>Open files without waiting for the download.</sub>
@@ -120,6 +146,7 @@ Everything below is built into the app — free, for every user.
         <li>Stream video and audio straight from Telegram</li>
         <li>Resume where you stopped, with “Continue watching”</li>
         <li>Image viewer and PDF viewer</li>
+        <li>Word, Excel, CSV and TXT previews</li>
         <li>Browse ZIP and 7z archives</li>
         <li>A clear card for file types that can’t be previewed</li>
       </ul>
@@ -183,6 +210,9 @@ Everything below is built into the app — free, for every user.
         <li>Internet share links — open from anywhere while Nexa is running</li>
         <li>Choose how long a link stays active; it switches off by itself</li>
         <li>Optional password and download counter</li>
+        <li>A QR code next to every link</li>
+        <li>The bell tells you when a link is opened</li>
+        <li>Works for files in private groups too</li>
         <li>Local REST API with your own key</li>
         <li>WebDAV access (read-only by default)</li>
         <li>Local stream links for media players</li>
@@ -221,6 +251,7 @@ Everything below is built into the app — free, for every user.
       <sub>New versions arrive inside the app.</sub>
       <ul>
         <li>Update pop-up when a new release is out</li>
+        <li><i>Settings › Check for update</i> shows an Update button</li>
         <li>Desktop: one click to download, install and restart</li>
         <li>Android: downloads and opens the installer by itself</li>
         <li>“What’s New” shows the real release notes</li>
@@ -228,9 +259,12 @@ Everything below is built into the app — free, for every user.
     </td>
     <td width="50%" valign="top">
       <img src="assets/readme/icons/android.svg" width="36" alt=""><br>
-      <b>Made for Android</b><br>
-      <sub>A real phone app, not a squeezed desktop.</sub>
+      <b>Made for phones</b><br>
+      <sub>Real phone apps, not a squeezed desktop.</sub>
       <ul>
+        <li>Photo and video backup — off until you turn it on</li>
+        <li>You pick the albums; new items sync when online</li>
+        <li>Android: home-screen widget for one-tap upload</li>
         <li>Downloads saved to <code>Download/Nexa TG Drive</code></li>
         <li>Send files to Nexa from the share sheet</li>
         <li>Transfers keep running in the background</li>
@@ -251,6 +285,8 @@ Everything below is built into the app — free, for every user.
 ### Languages
 
 The interface comes in **18 languages**. Pick one in *Settings › General › Language*; Arabic, Urdu and Persian use a right-to-left layout.
+
+Need help? *Settings › Report a problem* sends the details for you, and *Settings › Support the developer* is there if you want to give back.
 
 | | | |
 | :-- | :-- | :-- |
@@ -281,10 +317,21 @@ Get it from the official website **[nexatgdrive.pages.dev](https://nexatgdrive.p
 | :-- | :-- |
 | macOS — Apple Silicon | `…_arm64.dmg` |
 | macOS — Intel | `…_Intel.dmg` |
-| Windows | `…_x64-setup.exe` |
+| Windows 10 / 11 (64-bit) | `…_x64-setup.exe` · `…_x64_en-US.msi` |
 | Linux | `.AppImage` · `.deb` · `.rpm` |
 | Android | `…_android.apk` |
 | iPhone (iOS 15+) | `…_iOS.ipa` — install with TrollStore, SideStore or Sideloadly, see [iPhone](#iphone-ios-15) |
+
+## System requirements
+
+| Platform | Requirement |
+| :-- | :-- |
+| Windows | Windows 10 or Windows 11, 64-bit (setup .exe or .msi). Windows 7, 8, 8.1 and 32-bit Windows are not supported. |
+| macOS | Apple Silicon (all M-series chips) or Intel; pick the matching .dmg. |
+| Linux | 64-bit (x86_64): AppImage, .deb or .rpm. Nexa Drive needs FUSE once. |
+| Android | Android 7.0 or newer. |
+| iPhone | iOS 15 or newer (installed with TrollStore, SideStore or Sideloadly). |
+| All | Your own Telegram account and a free API ID and API Hash from my.telegram.org. |
 
 ## Get started
 
@@ -415,13 +462,19 @@ The simple fallback for any iOS 15+, from Windows or macOS.
 | Feature | Windows | macOS | Linux | Android | iPhone |
 | :-- | :-: | :-: | :-: | :-: | :-: |
 | Drive, transfers, preview and streaming | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Word, Excel, CSV and TXT previews | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Thumbnails and format tiles | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Library, collections, tags | ✓ | ✓ | ✓ | ✓ | ✓ |
 | File encryption | ✓ | ✓ | ✓ | ✓ | ✓ |
 | QR and phone sign-in, 2FA | ✓ | ✓ | ✓ | ✓ | ✓ |
 | In-app updates | ✓ | ✓ | ✓ <sub>AppImage</sub> | ✓ | ✓ <sub>update pop-up; installs via TrollStore / SideStore</sub> |
+| Nexa Drive (files as a computer drive) | ✓ | ✓ | ✓ | — | — |
+| Starts with the computer, tray / menu-bar icon | ✓ | ✓ | ✓ | — | — |
 | Folder Sync with live watcher | ✓ | ✓ | ✓ | — | — |
-| Internet share links, REST API, WebDAV | ✓ | ✓ | ✓ | ✓ | ✓ <sub>while open</sub> |
+| Right-click “Send to Nexa” | ✓ | — | — | — | — |
+| Photo and video backup (opt-in) | — | — | — | ✓ | ✓ |
+| Home-screen widget | — | — | — | ✓ | — |
+| Internet share links with QR code, REST API, WebDAV | ✓ | ✓ | ✓ | ✓ | ✓ <sub>while open</sub> |
 | Tray icon and desktop notifications | ✓ | ✓ | ✓ | — | — |
 | Fingerprint lock, screen-capture block | — | — | — | ✓ | — |
 | Share-sheet upload, background transfers | — | — | — | ✓ | — |
@@ -457,6 +510,31 @@ The simple fallback for any iOS 15+, from Windows or macOS.
 <details>
 <summary><b>Why isn’t the iPhone app on the App Store?</b></summary>
 <br>Publishing there needs a paid Apple developer account. Instead, you install it for free — with TrollStore on iOS 15.0 – 16.6.1, 16.7 RC and 17.0, otherwise with SideStore or Sideloadly and your own Apple ID — see <a href="#iphone-ios-15">iPhone</a>.
+</details>
+
+<details>
+<summary><b>Which Windows versions are supported?</b></summary>
+<br>Windows 10 and Windows 11, 64-bit. Windows 7, 8, 8.1 and 32-bit Windows can’t run Nexa TG Drive — it needs Microsoft WebView2 and a 64-bit system.
+</details>
+
+<details>
+<summary><b>What is Nexa Drive?</b></summary>
+<br>On Windows, Mac and Linux your Nexa files appear as a drive (This PC, Finder or your file manager). Any app can open files from it and save files into it directly. On Windows the free WinFsp driver is installed together with Nexa — allow the one Windows prompt during setup. Turn it on or off in <i>Settings › Nexa Drive</i>.
+</details>
+
+<details>
+<summary><b>Why does Nexa keep running after I close it?</b></summary>
+<br>On computers Nexa starts with your computer and stays as a small icon in the tray / menu bar, so the drive, sync and share links keep working. Click the icon to open the window; use the icon › Quit to stop it completely.
+</details>
+
+<details>
+<summary><b>Does the phone back up my photos?</b></summary>
+<br>Only if you turn it on. Photo and video backup is off by default; in <i>Settings › Camera backup</i> you choose the albums, and new items go to your own Telegram when you are online. On iPhone it runs while the app is open and shortly after.
+</details>
+
+<details>
+<summary><b>Android warns me when I install it.</b></summary>
+<br>Apps installed from outside the Play Store are checked by Google Play Protect. Nexa TG Drive is signed with the same key for every release. Tap <b>Install anyway</b> (or allow the scan) to continue.
 </details>
 
 <details>
